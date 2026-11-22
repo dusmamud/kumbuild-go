@@ -50,6 +50,15 @@ PW="YourSecurePassword" go run ./cmd/hashpw
 ```
 Copy the printed bcrypt hash into `ADMIN_PASSWORD_HASH` in `.env`.
 
+> **IMPORTANT — wrap the hash in single quotes:**
+> ```ini
+> ADMIN_PASSWORD_HASH='$2a$12$...'
+> ```
+> A bcrypt hash contains `$` characters. Without the single quotes, the `.env`
+> parser treats those as variable references and silently corrupts the hash —
+> the server starts fine, but **login always fails with 401, even with the
+> correct password**. If login keeps failing after setup, check this first.
+
 ### 2. Configure Environment
 Copy `.env.example` to `.env` and configure all required variables:
 ```bash
