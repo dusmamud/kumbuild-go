@@ -5,6 +5,7 @@
 *.so
 *.dylib
 bin/
+kumbuild-go
 /tmp/
 vendor/
 
