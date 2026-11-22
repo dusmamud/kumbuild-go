@@ -23,6 +23,7 @@ type Store interface {
 	GetCustomers(ctx context.Context) ([]models.Customer, error)
 	CreateCampaign(ctx context.Context, c *models.Campaign) error
 	ListCampaigns(ctx context.Context) ([]models.Campaign, error)
+	UpdateCampaignCounts(ctx context.Context, id int64, sent int, failed int) error
 	GetAllCustomerEmails(ctx context.Context) ([]string, error)
 	Close()
 }

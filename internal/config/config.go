@@ -15,6 +15,9 @@ type Config struct {
 	MailFrom           string
 	OwnerEmail         string
 	AdminToken         string
+	AdminEmail         string
+	AdminPasswordHash  string
+	JWTSecret          string
 	TurnstileSecretKey string
 	CORSOrigins        []string
 }
@@ -29,6 +32,9 @@ func Load() *Config {
 	mailFrom := getEnv("MAIL_FROM", "hello@kumbuild.com")
 	ownerEmail := getEnv("OWNER_EMAIL", "hello@kumbuild.com")
 	adminToken := os.Getenv("ADMIN_TOKEN")
+	adminEmail := os.Getenv("ADMIN_EMAIL")
+	adminPwHash := os.Getenv("ADMIN_PASSWORD_HASH")
+	jwtSecret := os.Getenv("JWT_SECRET")
 	turnstileKey := os.Getenv("TURNSTILE_SECRET_KEY")
 
 	corsRaw := getEnv("CORS_ORIGINS", "http://localhost:5173,https://kumbuild.com,https://www.kumbuild.com")
@@ -44,6 +50,9 @@ func Load() *Config {
 		MailFrom:           mailFrom,
 		OwnerEmail:         ownerEmail,
 		AdminToken:         adminToken,
+		AdminEmail:         adminEmail,
+		AdminPasswordHash:  adminPwHash,
+		JWTSecret:          jwtSecret,
 		TurnstileSecretKey: turnstileKey,
 		CORSOrigins:        origins,
 	}
@@ -52,6 +61,15 @@ func Load() *Config {
 func (c *Config) Validate() error {
 	if strings.TrimSpace(c.AdminToken) == "" {
 		return errors.New("ADMIN_TOKEN is required — set a long random value in .env")
+	}
+	if strings.TrimSpace(c.AdminEmail) == "" {
+		return errors.New("ADMIN_EMAIL is required — set owner login email in .env")
+	}
+	if strings.TrimSpace(c.AdminPasswordHash) == "" {
+		return errors.New("ADMIN_PASSWORD_HASH is required — run cmd/hashpw to generate bcrypt hash")
+	}
+	if strings.TrimSpace(c.JWTSecret) == "" {
+		return errors.New("JWT_SECRET is required — set a long random secret in .env")
 	}
 	return nil
 }

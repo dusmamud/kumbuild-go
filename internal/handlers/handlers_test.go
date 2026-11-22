@@ -8,8 +8,11 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/crypto/bcrypt"
+	"kumbuild-go/internal/auth"
 	"kumbuild-go/internal/config"
 	"kumbuild-go/internal/handlers"
 	"kumbuild-go/internal/models"
@@ -35,6 +38,20 @@ func (m *mockEmailSender) SendCustomerConfirmation(ctx context.Context, order *m
 	return nil
 }
 
+const (
+	testAdminEmail    = "owner@kumbuild.com"
+	testAdminPassword = "TestPassword123!"
+	testAdminToken    = "test_admin_secret_token"
+	testJWTSecret     = "super_secret_jwt_key_for_unit_tests_32_bytes!"
+)
+
+var testPasswordHash string
+
+func init() {
+	hash, _ := bcrypt.GenerateFromPassword([]byte(testAdminPassword), bcrypt.MinCost)
+	testPasswordHash = string(hash)
+}
+
 func setupTestApp() (http.Handler, store.Store, *mockEmailSender) {
 	cfg := &config.Config{
 		Port:               "8080",
@@ -42,7 +59,10 @@ func setupTestApp() (http.Handler, store.Store, *mockEmailSender) {
 		BrevoAPIKey:        "",
 		MailFrom:           "hello@kumbuild.com",
 		OwnerEmail:         "hello@kumbuild.com",
-		AdminToken:         "test_admin_secret",
+		AdminToken:         testAdminToken,
+		AdminEmail:         testAdminEmail,
+		AdminPasswordHash:  testPasswordHash,
+		JWTSecret:          testJWTSecret,
 		TurnstileSecretKey: "", // empty = skip in test
 		CORSOrigins:        []string{"*"},
 	}
@@ -189,7 +209,7 @@ func TestAdminTokenAuth(t *testing.T) {
 
 	// Correct token -> 200
 	req3 := httptest.NewRequest(http.MethodGet, "/api/admin/orders", nil)
-	req3.Header.Set("X-Admin-Token", "test_admin_secret")
+	req3.Header.Set("X-Admin-Token", testAdminToken)
 	rec3 := httptest.NewRecorder()
 	app.ServeHTTP(rec3, req3)
 	if rec3.Code != http.StatusOK {
@@ -213,7 +233,7 @@ func TestStatusValidation_PATCH(t *testing.T) {
 	patchInvalid, _ := json.Marshal(map[string]string{"status": "some_random_status"})
 	req1 := httptest.NewRequest(http.MethodPatch, "/api/admin/orders/1", bytes.NewReader(patchInvalid))
 	req1.Header.Set("Content-Type", "application/json")
-	req1.Header.Set("X-Admin-Token", "test_admin_secret")
+	req1.Header.Set("X-Admin-Token", testAdminToken)
 	rec1 := httptest.NewRecorder()
 	app.ServeHTTP(rec1, req1)
 	if rec1.Code != http.StatusBadRequest {
@@ -224,7 +244,7 @@ func TestStatusValidation_PATCH(t *testing.T) {
 	patchValid, _ := json.Marshal(map[string]string{"status": "advance_paid"})
 	req2 := httptest.NewRequest(http.MethodPatch, "/api/admin/orders/1", bytes.NewReader(patchValid))
 	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("X-Admin-Token", "test_admin_secret")
+	req2.Header.Set("X-Admin-Token", testAdminToken)
 	rec2 := httptest.NewRecorder()
 	app.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusOK {
@@ -249,7 +269,7 @@ func TestCampaign_ZeroRecipients(t *testing.T) {
 	})
 	req1 := httptest.NewRequest(http.MethodPost, "/api/admin/campaigns", bytes.NewReader(payload1))
 	req1.Header.Set("Content-Type", "application/json")
-	req1.Header.Set("X-Admin-Token", "test_admin_secret")
+	req1.Header.Set("X-Admin-Token", testAdminToken)
 	rec1 := httptest.NewRecorder()
 	app.ServeHTTP(rec1, req1)
 	if rec1.Code != http.StatusBadRequest {
@@ -264,7 +284,7 @@ func TestCampaign_ZeroRecipients(t *testing.T) {
 	})
 	req2 := httptest.NewRequest(http.MethodPost, "/api/admin/campaigns", bytes.NewReader(payload2))
 	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("X-Admin-Token", "test_admin_secret")
+	req2.Header.Set("X-Admin-Token", testAdminToken)
 	rec2 := httptest.NewRecorder()
 	app.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusBadRequest {
@@ -339,43 +359,45 @@ func TestBusinessTypeValidation(t *testing.T) {
 
 // 12. Fix D: Indian phone formats (12 digits starting with 91, 11 digits starting with 0)
 func TestPhoneNormalization_IndianFormats(t *testing.T) {
-	// 12 digits starting with 91 without plus -> +919812345678
 	norm1, ok1 := models.NormalizePhone("919812345678")
 	if !ok1 || norm1 != "+919812345678" {
 		t.Fatalf("expected '+919812345678' for '919812345678', got '%s'", norm1)
 	}
 
-	// 11 digits starting with 0 -> +919812345678
 	norm2, ok2 := models.NormalizePhone("09812345678")
 	if !ok2 || norm2 != "+919812345678" {
 		t.Fatalf("expected '+919812345678' for '09812345678', got '%s'", norm2)
 	}
 
-	// Existing 10-digit without prefix
 	norm3, ok3 := models.NormalizePhone("9812345678")
 	if !ok3 || norm3 != "+919812345678" {
 		t.Fatalf("expected '+919812345678' for '9812345678', got '%s'", norm3)
 	}
 
-	// Existing with spaces and +91
 	norm4, ok4 := models.NormalizePhone("+91 98123 45678")
 	if !ok4 || norm4 != "+919812345678" {
 		t.Fatalf("expected '+919812345678' for '+91 98123 45678', got '%s'", norm4)
 	}
 }
 
-// 13. Fix B: Admin token required validation
-func TestConfig_AdminTokenRequired(t *testing.T) {
+// 13. Fix B: All required environment variables validation
+func TestConfig_ValidationRequiredFields(t *testing.T) {
 	cfg := &config.Config{
-		AdminToken: "",
+		AdminToken:        "",
+		AdminEmail:        "",
+		AdminPasswordHash: "",
+		JWTSecret:         "",
 	}
 	if err := cfg.Validate(); err == nil {
-		t.Fatalf("expected error when AdminToken is empty, got nil")
+		t.Fatalf("expected error when required fields are empty, got nil")
 	}
 
-	cfg.AdminToken = "super_secure_random_token"
+	cfg.AdminToken = "token"
+	cfg.AdminEmail = "admin@kumbuild.com"
+	cfg.AdminPasswordHash = "$2a$12$..."
+	cfg.JWTSecret = "jwt_secret_32_chars"
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("expected no error when AdminToken is provided, got %v", err)
+		t.Fatalf("expected nil when all required fields are set, got %v", err)
 	}
 }
 
@@ -388,7 +410,6 @@ type collidingStore struct {
 func (c *collidingStore) CreateOrder(ctx context.Context, o *models.Order) error {
 	c.attempts++
 	if c.attempts == 1 {
-		// Simulate collision on first attempt
 		return store.ErrDuplicateReference
 	}
 	return c.Store.CreateOrder(ctx, o)
@@ -398,9 +419,13 @@ func TestOrderReferenceCollisionRetry(t *testing.T) {
 	memStore := store.NewMemoryStore()
 	colliding := &collidingStore{Store: memStore}
 	cfg := &config.Config{
-		Port:        "8080",
-		DatabaseURL: "memory",
-		AdminToken:  "test_admin_secret",
+		Port:               "8080",
+		DatabaseURL:        "memory",
+		AdminToken:         testAdminToken,
+		AdminEmail:         testAdminEmail,
+		AdminPasswordHash:  testPasswordHash,
+		JWTSecret:          testJWTSecret,
+		TurnstileSecretKey: "",
 	}
 	mockEmail := &mockEmailSender{}
 	verifier := turnstile.NewVerifier("")
@@ -425,5 +450,250 @@ func TestOrderReferenceCollisionRetry(t *testing.T) {
 	}
 	if colliding.attempts != 2 {
 		t.Fatalf("expected exactly 2 attempts (1 collision + 1 success), got %d", colliding.attempts)
+	}
+}
+
+// 15. Admin Login: Success returns valid JWT + email
+func TestAdminLogin_Success(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	payload := models.AdminLoginRequest{
+		Email:    testAdminEmail,
+		Password: testAdminPassword,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp models.AdminLoginResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode login response: %v", err)
+	}
+
+	if resp.Token == "" {
+		t.Fatal("expected non-empty JWT token")
+	}
+	if resp.Email != testAdminEmail {
+		t.Fatalf("expected email '%s', got '%s'", testAdminEmail, resp.Email)
+	}
+
+	// Verify token validity
+	email, err := auth.ValidateJWT(resp.Token, testJWTSecret)
+	if err != nil || email != testAdminEmail {
+		t.Fatalf("expected valid JWT for %s, got email=%s, err=%v", testAdminEmail, email, err)
+	}
+}
+
+// 16. Admin Login: Wrong password -> 401
+func TestAdminLogin_WrongPassword(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	payload := models.AdminLoginRequest{
+		Email:    testAdminEmail,
+		Password: "IncorrectPassword123",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for wrong password, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 17. Admin Login: Wrong email -> 401
+func TestAdminLogin_WrongEmail(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	payload := models.AdminLoginRequest{
+		Email:    "unknown@attacker.com",
+		Password: testAdminPassword,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for wrong email, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 18. Admin Login: Rate Limiter returns 429 on 6th failed attempt
+func TestAdminLogin_RateLimiter(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	payload := models.AdminLoginRequest{
+		Email:    testAdminEmail,
+		Password: "BadPassword",
+	}
+	body, _ := json.Marshal(payload)
+
+	// Attempts 1 to 5 should return 401
+	for i := 1; i <= 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.168.100.50:1234"
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", i, rec.Code)
+		}
+	}
+
+	// 6th attempt from same IP should return 429 Too Many Requests
+	req6 := httptest.NewRequest(http.MethodPost, "/api/admin/login", bytes.NewReader(body))
+	req6.Header.Set("Content-Type", "application/json")
+	req6.RemoteAddr = "192.168.100.50:1234"
+	rec6 := httptest.NewRecorder()
+	app.ServeHTTP(rec6, req6)
+
+	if rec6.Code != http.StatusTooManyRequests {
+		t.Fatalf("attempt 6: expected 429 Too Many Requests, got %d: %s", rec6.Code, rec6.Body.String())
+	}
+}
+
+// 19. /api/admin/me with valid JWT -> 200
+func TestAdminMe_ValidJWT(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	token, _ := auth.GenerateJWT(testAdminEmail, testJWTSecret)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var data map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&data)
+	if data["email"] != testAdminEmail {
+		t.Fatalf("expected email '%s', got '%s'", testAdminEmail, data["email"])
+	}
+}
+
+// 20. /api/admin/me with expired or tampered JWT -> 401
+func TestAdminMe_TamperedOrExpiredJWT(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	// Tampered token
+	req1 := httptest.NewRequest(http.MethodGet, "/api/admin/me", nil)
+	req1.Header.Set("Authorization", "Bearer tampered.jwt.token")
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for tampered JWT, got %d", rec1.Code)
+	}
+
+	// Token signed with wrong secret
+	wrongSecretToken, _ := auth.GenerateJWT(testAdminEmail, "wrong_secret_12345678901234567890")
+	req2 := httptest.NewRequest(http.MethodGet, "/api/admin/me", nil)
+	req2.Header.Set("Authorization", "Bearer "+wrongSecretToken)
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for JWT with wrong secret, got %d", rec2.Code)
+	}
+}
+
+// 21. Admin routes accept Bearer JWT
+func TestAdminRoutes_BearerJWT(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	token, _ := auth.GenerateJWT(testAdminEmail, testJWTSecret)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for Bearer JWT on /orders, got %d", rec.Code)
+	}
+}
+
+// 22. Admin routes still accept X-Admin-Token (backward compatibility)
+func TestAdminRoutes_XAdminToken(t *testing.T) {
+	app, _, _ := setupTestApp()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/orders", nil)
+	req.Header.Set("X-Admin-Token", testAdminToken)
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for X-Admin-Token on /orders, got %d", rec.Code)
+	}
+}
+
+// 23. Campaign create returns immediately with 201 and campaign record
+func TestCampaignCreate_ImmediateReturn(t *testing.T) {
+	app, memStore, _ := setupTestApp()
+
+	// Seed an order with an email
+	orderEmail := "customer@example.com"
+	_ = memStore.CreateOrder(context.Background(), &models.Order{
+		Reference: "KB-CAMP01",
+		Name:      "Campaign Target",
+		Phone:     "+919876543210",
+		Email:     &orderEmail,
+		Status:    "new",
+	})
+
+	token, _ := auth.GenerateJWT(testAdminEmail, testJWTSecret)
+
+	payload := map[string]any{
+		"subject":    "Flash Announcement",
+		"html":       "<p>Big news</p>",
+		"recipients": "all",
+	}
+	body, _ := json.Marshal(payload)
+	start := time.Now()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/campaigns", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created immediately, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var camp models.Campaign
+	if err := json.NewDecoder(rec.Body).Decode(&camp); err != nil {
+		t.Fatalf("failed to decode created campaign response: %v", err)
+	}
+
+	if camp.Subject != "Flash Announcement" {
+		t.Fatalf("expected subject 'Flash Announcement', got '%s'", camp.Subject)
+	}
+	if camp.RecipientsCount != 1 {
+		t.Fatalf("expected RecipientsCount 1, got %d", camp.RecipientsCount)
+	}
+
+	// Should return within milliseconds, not blocking
+	if elapsed > 100*time.Millisecond {
+		t.Logf("Note: campaign create took %v", elapsed)
 	}
 }

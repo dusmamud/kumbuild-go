@@ -9,11 +9,15 @@ Lightweight, high-performance Go backend for **Kumbuild** (kumbuild.com) — rec
 - **Go 1.23+** (Standard library focused, minimal external dependencies):
   - `github.com/go-chi/chi/v5` (HTTP router)
   - `github.com/jackc/pgx/v5` (PostgreSQL driver & connection pool)
+  - `github.com/golang-jwt/jwt/v5` (JWT session tokens for admin panel)
+  - `golang.org/x/crypto/bcrypt` (Secure password hashing)
   - `github.com/joho/godotenv` (Local `.env` loader)
 - **PostgreSQL 16 / Supabase**: Sequential schema migrations embedded via `embed.FS` and auto-executed on server boot. Fail-fast error handling: if PostgreSQL connection fails, server immediately stops (no silent in-memory fallback).
-- **Brevo API**: Asynchronous transactional notifications and promotional email campaigns.
+- **Brevo API**: Asynchronous transactional notifications and non-blocking background promotional email campaigns.
 - **Cloudflare Turnstile**: Bot protection on public order submissions with auto-skip in local dev when secret is omitted.
-- **Admin Token Authentication**: Protected admin routes using constant-time `X-Admin-Token` verification. `ADMIN_TOKEN` is mandatory; server will refuse to start without it.
+- **Dual Authentication**:
+  - `Authorization: Bearer <JWT>`: 24-hour signed session tokens for the owner admin panel.
+  - `X-Admin-Token: <token>`: Master secret header for backend scripts / automation.
 
 ---
 
@@ -23,37 +27,40 @@ Lightweight, high-performance Go backend for **Kumbuild** (kumbuild.com) — rec
 | :--- | :--- | :--- | :--- |
 | `PORT` | `8080` | No | HTTP server port |
 | `DATABASE_URL` | `postgres://...` | Yes | PostgreSQL connection string. `DATABASE_URL=memory` is for dev/tests only. The server fails fast if PostgreSQL is unreachable. |
-| `ADMIN_TOKEN` | *(None)* | **YES** | Mandatory private token passed via `X-Admin-Token` header for admin routes. Server will refuse to boot if empty. |
-| `OWNER_EMAIL` | `hello@kumbuild.com` | No | Kumbuild owner's alert email destination |
-| `MAIL_FROM` | `hello@kumbuild.com` | No | Sender email address for Kumbuild notifications |
-| `BREVO_API_KEY` | *(empty in dev)* | No | Brevo v3 API Key for sending emails (logs mock if empty) |
-| `TURNSTILE_SECRET_KEY` | *(empty in dev)* | No | Cloudflare Turnstile secret key (skipped if empty) |
-| `CORS_ORIGINS` | `http://localhost:5173,https://kumbuild.com,https://www.kumbuild.com` | No | Comma-separated allowed CORS origins |
+| `ADMIN_EMAIL` | *(None)* | **YES** | Owner's login email address for the admin panel. |
+| `ADMIN_PASSWORD_HASH` | *(None)* | **YES** | Bcrypt hash (cost 12) of owner's password. Generated via `cmd/hashpw`. |
+| `JWT_SECRET` | *(None)* | **YES** | Cryptographic secret for signing session JWTs (32+ chars). |
+| `ADMIN_TOKEN` | *(None)* | **YES** | Master secret token passed via `X-Admin-Token` header for scripts. Server refuses to boot if empty. |
+| `OWNER_EMAIL` | `hello@kumbuild.com` | No | Destination email for new order alerts. |
+| `MAIL_FROM` | `hello@kumbuild.com` | No | Sender address for Kumbuild notifications. |
+| `BREVO_API_KEY` | *(empty in dev)* | No | Brevo v3 API Key for sending emails (logs mock if empty). |
+| `TURNSTILE_SECRET_KEY` | *(empty in dev)* | No | Cloudflare Turnstile secret key (skipped if empty). |
+| `CORS_ORIGINS` | `http://localhost:5173,https://kumbuild.com,https://www.kumbuild.com` | No | Comma-separated allowed CORS origins. |
 
 ---
 
-## How to Run
+## First-Time Setup
 
-### 1. Start PostgreSQL (Docker) or use Supabase
+### 1. Generate Admin Password Hash
+Run the included password hash utility:
 ```bash
-docker compose up -d
+go run ./cmd/hashpw
+# Or pass via PW environment variable:
+PW="YourSecurePassword" go run ./cmd/hashpw
 ```
-*(Runs Postgres 16 on port 5432 with database `kumbuild_orders`, user `kumbuild`, password `kumbuild`)*
-
-Or provide a valid Supabase Session Pooler connection string (`port 5432`, `sslmode=require`).
+Copy the printed bcrypt hash into `ADMIN_PASSWORD_HASH` in `.env`.
 
 ### 2. Configure Environment
-Copy `.env.example` to `.env` and set a secure `ADMIN_TOKEN`:
+Copy `.env.example` to `.env` and configure all required variables:
 ```bash
 cp .env.example .env
 ```
+Ensure `ADMIN_EMAIL`, `ADMIN_PASSWORD_HASH`, `JWT_SECRET`, and `ADMIN_TOKEN` are set.
 
-### 3. Run the Backend
+### 3. Run Server
 ```bash
 go run ./cmd/server
 ```
-
-*(Note: The server requires a reachable PostgreSQL database unless `DATABASE_URL=memory` is explicitly passed for local unit testing.)*
 
 ### 4. Run Automated Tests
 ```bash
@@ -64,61 +71,22 @@ go test -v ./...
 
 ## HTTP API Reference
 
-All responses return standard JSON. Errors follow the unified shape:
-```json
-{
-  "error": "human-readable error message"
-}
-```
-
 ### Public Endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/healthz` | Health check endpoint returning `{"ok":true}` |
-| `POST` | `/api/orders` | Public website order submission (verifies Turnstile, retries reference collisions up to 3x, saves order, dispatches async emails) |
+| `POST` | `/api/orders` | Public website order submission (verifies Turnstile, retries collisions, dispatches async emails) |
+| `POST` | `/api/admin/login` | Owner authentication endpoint (`{"email":"...","password":"..."}`). Returns 24-hr JWT. Rate limited to 5 failed attempts per 15 min per IP. |
 
-#### Order Payload Schema:
-```json
-{
-  "name": "Dr. Ramesh Gupta",
-  "businessName": "Gupta Dental Care",
-  "businessType": "Clinic",
-  "package": "business",
-  "phone": "9876543210",
-  "whatsapp": "9876543210",
-  "email": "dr.gupta@example.com",
-  "contentLanguage": "English, Hindi",
-  "message": "Looking for clinic appointment booking and dental treatment showcase.",
-  "turnstileToken": ""
-}
-```
-**Phone Normalization:**
-- `9812345678` (10 digits) → `+919812345678`
-- `09812345678` (11 digits with leading 0) → `+919812345678`
-- `919812345678` (12 digits with 91 prefix) → `+919812345678`
-
-**Allowed packages:** `starter`, `business`, `premium`  
-**Allowed business types:** `Shop`, `Clinic`, `Tuition / Coaching`, `Salon`, `Restaurant / Cafe`, `Other`  
-**Response (201 Created):**
-```json
-{
-  "reference": "KB-7F3K9A"
-}
-```
-
----
-
-### Admin Endpoints (`X-Admin-Token` Header Required)
+### Protected Admin Endpoints (`Bearer <JWT>` or `X-Admin-Token` Required)
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
+| `GET` | `/api/admin/me` | Returns `{ "email": "..." }` for the currently authenticated admin session |
 | `GET` | `/api/admin/orders` | List orders (supports `?status=`, `?q=`, `?page=`, `?limit=`) |
 | `GET` | `/api/admin/orders/{id}` | Get single order details |
 | `PATCH` | `/api/admin/orders/{id}` | Update order status (`{"status":"in_progress"}`) |
 | `GET` | `/api/admin/customers` | Get customer overview aggregated by unique phone number |
-| `POST` | `/api/admin/campaigns` | Send promotional email campaign (`{"subject": "...", "html": "...", "recipients": "all"}`) |
-| `GET` | `/api/admin/campaigns` | Get list of historical campaigns and delivery statistics |
-
-**Allowed order statuses:**  
-`new`, `contacted`, `advance_paid`, `in_progress`, `preview_ready`, `delivered`, `cancelled`
+| `POST` | `/api/admin/campaigns` | Non-blocking async promotional broadcast (`{"subject":"...","html":"...","recipients":"all"}`). Returns 201 immediately; sends in background. |
+| `GET` | `/api/admin/campaigns` | Get list of historical campaigns and real-time delivery counts |

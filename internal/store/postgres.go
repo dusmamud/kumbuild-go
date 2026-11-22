@@ -312,7 +312,6 @@ func (s *PostgresStore) UpdateOrderStatus(ctx context.Context, id int64, status 
 }
 
 func (s *PostgresStore) GetCustomers(ctx context.Context) ([]models.Customer, error) {
-	// Grouped by phone: latest name/business/whatsapp/email, order count, last order date. Newest activity first.
 	query := `
 		SELECT DISTINCT ON (phone)
 			name,
@@ -348,7 +347,6 @@ func (s *PostgresStore) GetCustomers(ctx context.Context) ([]models.Customer, er
 		customers = append(customers, c)
 	}
 
-	// Sort customers by last_order_date DESC
 	sort.Slice(customers, func(i, j int) bool {
 		return customers[i].LastOrderDate.After(customers[j].LastOrderDate)
 	})
@@ -362,8 +360,8 @@ func (s *PostgresStore) GetCustomers(ctx context.Context) ([]models.Customer, er
 
 func (s *PostgresStore) CreateCampaign(ctx context.Context, c *models.Campaign) error {
 	query := `
-		INSERT INTO campaigns (subject, body_html, recipients_count, status, detail, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO campaigns (subject, body_html, recipients_count, sent_count, failed_count, status, detail, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at;
 	`
 	now := time.Now().UTC()
@@ -373,6 +371,8 @@ func (s *PostgresStore) CreateCampaign(ctx context.Context, c *models.Campaign) 
 		c.Subject,
 		c.BodyHTML,
 		c.RecipientsCount,
+		c.SentCount,
+		c.FailedCount,
 		c.Status,
 		c.Detail,
 		c.CreatedAt,
@@ -381,7 +381,7 @@ func (s *PostgresStore) CreateCampaign(ctx context.Context, c *models.Campaign) 
 
 func (s *PostgresStore) ListCampaigns(ctx context.Context) ([]models.Campaign, error) {
 	query := `
-		SELECT id, subject, body_html, recipients_count, status, COALESCE(detail, ''), created_at
+		SELECT id, subject, body_html, recipients_count, sent_count, failed_count, status, COALESCE(detail, ''), created_at
 		FROM campaigns
 		ORDER BY created_at DESC;
 	`
@@ -399,6 +399,8 @@ func (s *PostgresStore) ListCampaigns(ctx context.Context) ([]models.Campaign, e
 			&c.Subject,
 			&c.BodyHTML,
 			&c.RecipientsCount,
+			&c.SentCount,
+			&c.FailedCount,
 			&c.Status,
 			&c.Detail,
 			&c.CreatedAt,
@@ -413,6 +415,29 @@ func (s *PostgresStore) ListCampaigns(ctx context.Context) ([]models.Campaign, e
 	}
 
 	return campaigns, nil
+}
+
+func (s *PostgresStore) UpdateCampaignCounts(ctx context.Context, id int64, sent int, failed int) error {
+	detail := fmt.Sprintf("Sent: %d, Failed: %d", sent, failed)
+	status := "sending"
+
+	var recipientsCount int
+	_ = s.pool.QueryRow(ctx, "SELECT recipients_count FROM campaigns WHERE id = $1", id).Scan(&recipientsCount)
+	if recipientsCount > 0 && sent+failed >= recipientsCount {
+		if sent > 0 {
+			status = "sent"
+		} else {
+			status = "failed"
+		}
+	}
+
+	query := `
+		UPDATE campaigns
+		SET sent_count = $1, failed_count = $2, status = $3, detail = $4
+		WHERE id = $5;
+	`
+	_, err := s.pool.Exec(ctx, query, sent, failed, status, detail, id)
+	return err
 }
 
 func (s *PostgresStore) GetAllCustomerEmails(ctx context.Context) ([]string, error) {

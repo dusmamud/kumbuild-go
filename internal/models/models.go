@@ -159,6 +159,8 @@ type Campaign struct {
 	Subject         string    `json:"subject"`
 	BodyHTML        string    `json:"bodyHtml"`
 	RecipientsCount int       `json:"recipientsCount"`
+	SentCount       int       `json:"sentCount"`
+	FailedCount     int       `json:"failedCount"`
 	Status          string    `json:"status"`
 	Detail          string    `json:"detail"`
 	CreatedAt       time.Time `json:"createdAt"`
@@ -185,4 +187,14 @@ type CreateCampaignRequest struct {
 	Subject    string `json:"subject"`
 	HTML       string `json:"html"`
 	Recipients any    `json:"recipients"` // "all" or []string
+}
+
+type AdminLoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type AdminLoginResponse struct {
+	Token string `json:"token"`
+	Email string `json:"email"`
 }

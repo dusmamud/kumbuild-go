@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -74,7 +75,6 @@ func (m *MemoryStore) ListOrders(_ context.Context, filter OrderFilter) ([]model
 		filtered = append(filtered, o)
 	}
 
-	// Sort newest first
 	sort.Slice(filtered, func(i, j int) bool {
 		return filtered[i].CreatedAt.After(filtered[j].CreatedAt)
 	})
@@ -136,7 +136,6 @@ func (m *MemoryStore) GetCustomers(_ context.Context) ([]models.Customer, error)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Group by phone
 	groups := make(map[string][]models.Order)
 	for _, o := range m.orders {
 		groups[o.Phone] = append(groups[o.Phone], o)
@@ -144,13 +143,11 @@ func (m *MemoryStore) GetCustomers(_ context.Context) ([]models.Customer, error)
 
 	var customers []models.Customer
 	for phone, orderList := range groups {
-		// sort newest first
 		sort.Slice(orderList, func(i, j int) bool {
 			return orderList[i].CreatedAt.After(orderList[j].CreatedAt)
 		})
 
 		latest := orderList[0]
-		// Find latest non-empty email
 		var email *string
 		for _, ord := range orderList {
 			if ord.Email != nil && *ord.Email != "" {
@@ -170,7 +167,6 @@ func (m *MemoryStore) GetCustomers(_ context.Context) ([]models.Customer, error)
 		})
 	}
 
-	// Sort newest activity first
 	sort.Slice(customers, func(i, j int) bool {
 		return customers[i].LastOrderDate.After(customers[j].LastOrderDate)
 	})
@@ -201,6 +197,28 @@ func (m *MemoryStore) ListCampaigns(_ context.Context) ([]models.Campaign, error
 	})
 
 	return res, nil
+}
+
+func (m *MemoryStore) UpdateCampaignCounts(_ context.Context, id int64, sent int, failed int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i := range m.campaigns {
+		if m.campaigns[i].ID == id {
+			m.campaigns[i].SentCount = sent
+			m.campaigns[i].FailedCount = failed
+			m.campaigns[i].Detail = fmt.Sprintf("Sent: %d, Failed: %d", sent, failed)
+			if m.campaigns[i].RecipientsCount > 0 && sent+failed >= m.campaigns[i].RecipientsCount {
+				if sent > 0 {
+					m.campaigns[i].Status = "sent"
+				} else {
+					m.campaigns[i].Status = "failed"
+				}
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 func (m *MemoryStore) GetAllCustomerEmails(_ context.Context) ([]string, error) {
