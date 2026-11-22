@@ -89,8 +89,11 @@ func GenerateReference() string {
 
 var nonDigitRegex = regexp.MustCompile(`\D`)
 
-// NormalizePhone strips non-essential spaces. If it contains exactly 10 digits, prefix +91.
-// Also ensures valid length >= 10 digits after stripping non-digits.
+// NormalizePhone strips non-essential spaces. Handles standard Indian formats:
+// - 10 digits (9812345678) -> +919812345678
+// - 11 digits starting with 0 (09812345678) -> +919812345678
+// - 12 digits starting with 91 (919812345678) -> +919812345678
+// - Existing with country code (+91 98123 45678, +1 800 555 0199) -> kept normalized with +
 func NormalizePhone(input string) (string, bool) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
@@ -104,6 +107,16 @@ func NormalizePhone(input string) (string, bool) {
 	digitsOnly := nonDigitRegex.ReplaceAllString(clean, "")
 	if len(digitsOnly) < 10 {
 		return "", false
+	}
+
+	// If 11 digits starting with 0: strip leading 0, prefix +91
+	if len(digitsOnly) == 11 && strings.HasPrefix(digitsOnly, "0") {
+		return "+91" + digitsOnly[1:], true
+	}
+
+	// If 12 digits starting with 91 and no + prefix: prefix +
+	if len(digitsOnly) == 12 && strings.HasPrefix(digitsOnly, "91") && !strings.HasPrefix(clean, "+") {
+		return "+" + digitsOnly, true
 	}
 
 	// If exactly 10 digits and not prefixed with +, prefix +91

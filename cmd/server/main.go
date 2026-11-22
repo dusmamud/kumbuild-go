@@ -23,22 +23,24 @@ func main() {
 	log.Println("Starting Kumbuild Orders Backend...")
 	cfg := config.Load()
 
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("[FATAL] %v", err)
+	}
+
 	var s store.Store
-	if strings.ToLower(cfg.DatabaseURL) == "memory" {
-		log.Println("[INFO] Using in-memory store (DATABASE_URL=memory)")
+	if strings.ToLower(strings.TrimSpace(cfg.DatabaseURL)) == "memory" {
+		log.Println("[INFO] Store: in-memory (dev only)")
 		s = store.NewMemoryStore()
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		pgStore, err := store.NewPostgresStore(ctx, cfg.DatabaseURL)
 		if err != nil {
-			log.Printf("[WARN] Failed to connect to Postgres (%v). Falling back to in-memory store for development/testing.", err)
-			s = store.NewMemoryStore()
-		} else {
-			log.Println("[INFO] Connected to PostgreSQL and verified database migrations")
-			s = pgStore
+			log.Fatalf("[FATAL] Failed to connect to PostgreSQL: %v", err)
 		}
+		log.Println("[INFO] Store: PostgreSQL")
+		s = pgStore
 	}
 	defer s.Close()
 

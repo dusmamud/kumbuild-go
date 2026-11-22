@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"kumbuild-go/internal/models"
 )
@@ -134,7 +135,7 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, o *models.Order) error 
 		o.Status = "new"
 	}
 
-	return s.pool.QueryRow(ctx, query,
+	err := s.pool.QueryRow(ctx, query,
 		o.Reference,
 		o.Name,
 		o.BusinessName,
@@ -149,6 +150,14 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, o *models.Order) error 
 		o.CreatedAt,
 		o.UpdatedAt,
 	).Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrDuplicateReference
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *PostgresStore) ListOrders(ctx context.Context, filter OrderFilter) ([]models.Order, int, error) {

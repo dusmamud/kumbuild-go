@@ -41,7 +41,7 @@ func setupTestApp() (http.Handler, store.Store, *mockEmailSender) {
 		DatabaseURL:        "memory",
 		BrevoAPIKey:        "",
 		MailFrom:           "hello@kumbuild.com",
-		OwnerEmail:         "owner@kumbuild.com",
+		OwnerEmail:         "hello@kumbuild.com",
 		AdminToken:         "test_admin_secret",
 		TurnstileSecretKey: "", // empty = skip in test
 		CORSOrigins:        []string{"*"},
@@ -334,5 +334,96 @@ func TestBusinessTypeValidation(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid businessType, got %d", rec.Code)
+	}
+}
+
+// 12. Fix D: Indian phone formats (12 digits starting with 91, 11 digits starting with 0)
+func TestPhoneNormalization_IndianFormats(t *testing.T) {
+	// 12 digits starting with 91 without plus -> +919812345678
+	norm1, ok1 := models.NormalizePhone("919812345678")
+	if !ok1 || norm1 != "+919812345678" {
+		t.Fatalf("expected '+919812345678' for '919812345678', got '%s'", norm1)
+	}
+
+	// 11 digits starting with 0 -> +919812345678
+	norm2, ok2 := models.NormalizePhone("09812345678")
+	if !ok2 || norm2 != "+919812345678" {
+		t.Fatalf("expected '+919812345678' for '09812345678', got '%s'", norm2)
+	}
+
+	// Existing 10-digit without prefix
+	norm3, ok3 := models.NormalizePhone("9812345678")
+	if !ok3 || norm3 != "+919812345678" {
+		t.Fatalf("expected '+919812345678' for '9812345678', got '%s'", norm3)
+	}
+
+	// Existing with spaces and +91
+	norm4, ok4 := models.NormalizePhone("+91 98123 45678")
+	if !ok4 || norm4 != "+919812345678" {
+		t.Fatalf("expected '+919812345678' for '+91 98123 45678', got '%s'", norm4)
+	}
+}
+
+// 13. Fix B: Admin token required validation
+func TestConfig_AdminTokenRequired(t *testing.T) {
+	cfg := &config.Config{
+		AdminToken: "",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when AdminToken is empty, got nil")
+	}
+
+	cfg.AdminToken = "super_secure_random_token"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error when AdminToken is provided, got %v", err)
+	}
+}
+
+// 14. Fix C: Order reference collision retry
+type collidingStore struct {
+	store.Store
+	attempts int
+}
+
+func (c *collidingStore) CreateOrder(ctx context.Context, o *models.Order) error {
+	c.attempts++
+	if c.attempts == 1 {
+		// Simulate collision on first attempt
+		return store.ErrDuplicateReference
+	}
+	return c.Store.CreateOrder(ctx, o)
+}
+
+func TestOrderReferenceCollisionRetry(t *testing.T) {
+	memStore := store.NewMemoryStore()
+	colliding := &collidingStore{Store: memStore}
+	cfg := &config.Config{
+		Port:        "8080",
+		DatabaseURL: "memory",
+		AdminToken:  "test_admin_secret",
+	}
+	mockEmail := &mockEmailSender{}
+	verifier := turnstile.NewVerifier("")
+
+	h := handlers.NewHandler(cfg, colliding, mockEmail, verifier)
+	r := chi.NewRouter()
+	handlers.RegisterRoutes(r, h)
+
+	payload := map[string]any{
+		"name":  "Colliding User",
+		"phone": "9876543210",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/orders", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created after retry, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if colliding.attempts != 2 {
+		t.Fatalf("expected exactly 2 attempts (1 collision + 1 success), got %d", colliding.attempts)
 	}
 }

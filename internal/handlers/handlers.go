@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -138,9 +139,7 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ref := models.GenerateReference()
 	order := &models.Order{
-		Reference:       ref,
 		Name:            name,
 		BusinessName:    strings.TrimSpace(req.BusinessName),
 		BusinessType:    bType,
@@ -153,8 +152,32 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		Status:          "new",
 	}
 
-	if err := h.store.CreateOrder(r.Context(), order); err != nil {
+	const maxRetries = 3
+	var orderCreated bool
+	var ref string
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ref = models.GenerateReference()
+		order.Reference = ref
+
+		err := h.store.CreateOrder(r.Context(), order)
+		if err == nil {
+			orderCreated = true
+			break
+		}
+
+		if errors.Is(err, store.ErrDuplicateReference) {
+			log.Printf("[WARN] Order reference collision on %s, retrying (attempt %d/%d)...", ref, attempt, maxRetries)
+			continue
+		}
+
 		log.Printf("[ERROR] Failed to insert order: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to create order")
+		return
+	}
+
+	if !orderCreated {
+		log.Printf("[ERROR] Failed to generate unique order reference after %d attempts", maxRetries)
 		writeError(w, http.StatusInternalServerError, "failed to create order")
 		return
 	}

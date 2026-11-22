@@ -10,10 +10,10 @@ Lightweight, high-performance Go backend for **Kumbuild** (kumbuild.com) — rec
   - `github.com/go-chi/chi/v5` (HTTP router)
   - `github.com/jackc/pgx/v5` (PostgreSQL driver & connection pool)
   - `github.com/joho/godotenv` (Local `.env` loader)
-- **PostgreSQL 16**: Sequential schema migrations embedded via `embed.FS` and auto-executed on server boot.
+- **PostgreSQL 16 / Supabase**: Sequential schema migrations embedded via `embed.FS` and auto-executed on server boot. Fail-fast error handling: if PostgreSQL connection fails, server immediately stops (no silent in-memory fallback).
 - **Brevo API**: Asynchronous transactional notifications and promotional email campaigns.
 - **Cloudflare Turnstile**: Bot protection on public order submissions with auto-skip in local dev when secret is omitted.
-- **Admin Token Authentication**: Protected admin routes using constant-time `X-Admin-Token` verification.
+- **Admin Token Authentication**: Protected admin routes using constant-time `X-Admin-Token` verification. `ADMIN_TOKEN` is mandatory; server will refuse to start without it.
 
 ---
 
@@ -22,11 +22,11 @@ Lightweight, high-performance Go backend for **Kumbuild** (kumbuild.com) — rec
 | Variable | Default / Example | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `PORT` | `8080` | No | HTTP server port |
-| `DATABASE_URL` | `postgres://kumbuild:kumbuild@localhost:5432/kumbuild_orders?sslmode=disable` | Yes | PostgreSQL connection string (or `memory` for in-memory testing) |
-| `BREVO_API_KEY` | *(empty in dev)* | No | Brevo v3 API Key for sending emails (logs mock if empty) |
+| `DATABASE_URL` | `postgres://...` | Yes | PostgreSQL connection string. `DATABASE_URL=memory` is for dev/tests only. The server fails fast if PostgreSQL is unreachable. |
+| `ADMIN_TOKEN` | *(None)* | **YES** | Mandatory private token passed via `X-Admin-Token` header for admin routes. Server will refuse to boot if empty. |
+| `OWNER_EMAIL` | `hello@kumbuild.com` | No | Kumbuild owner's alert email destination |
 | `MAIL_FROM` | `hello@kumbuild.com` | No | Sender email address for Kumbuild notifications |
-| `OWNER_EMAIL` | `owner@kumbuild.com` | Yes | Kumbuild owner's alert email destination |
-| `ADMIN_TOKEN` | `kumbuild_secret_admin_token_2026` | Yes | Token passed via `X-Admin-Token` header for admin routes |
+| `BREVO_API_KEY` | *(empty in dev)* | No | Brevo v3 API Key for sending emails (logs mock if empty) |
 | `TURNSTILE_SECRET_KEY` | *(empty in dev)* | No | Cloudflare Turnstile secret key (skipped if empty) |
 | `CORS_ORIGINS` | `http://localhost:5173,https://kumbuild.com,https://www.kumbuild.com` | No | Comma-separated allowed CORS origins |
 
@@ -34,14 +34,16 @@ Lightweight, high-performance Go backend for **Kumbuild** (kumbuild.com) — rec
 
 ## How to Run
 
-### 1. Start PostgreSQL (Docker)
+### 1. Start PostgreSQL (Docker) or use Supabase
 ```bash
 docker compose up -d
 ```
 *(Runs Postgres 16 on port 5432 with database `kumbuild_orders`, user `kumbuild`, password `kumbuild`)*
 
+Or provide a valid Supabase Session Pooler connection string (`port 5432`, `sslmode=require`).
+
 ### 2. Configure Environment
-Copy `.env.example` to `.env`:
+Copy `.env.example` to `.env` and set a secure `ADMIN_TOKEN`:
 ```bash
 cp .env.example .env
 ```
@@ -51,7 +53,7 @@ cp .env.example .env
 go run ./cmd/server
 ```
 
-*(Note: If Postgres is not running locally, the server automatically falls back to an in-memory store so development and testing can proceed seamlessly.)*
+*(Note: The server requires a reachable PostgreSQL database unless `DATABASE_URL=memory` is explicitly passed for local unit testing.)*
 
 ### 4. Run Automated Tests
 ```bash
@@ -74,7 +76,7 @@ All responses return standard JSON. Errors follow the unified shape:
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/healthz` | Health check endpoint returning `{"ok":true}` |
-| `POST` | `/api/orders` | Public website order submission (verifies Turnstile, saves order, dispatches async emails) |
+| `POST` | `/api/orders` | Public website order submission (verifies Turnstile, retries reference collisions up to 3x, saves order, dispatches async emails) |
 
 #### Order Payload Schema:
 ```json
@@ -91,6 +93,11 @@ All responses return standard JSON. Errors follow the unified shape:
   "turnstileToken": ""
 }
 ```
+**Phone Normalization:**
+- `9812345678` (10 digits) → `+919812345678`
+- `09812345678` (11 digits with leading 0) → `+919812345678`
+- `919812345678` (12 digits with 91 prefix) → `+919812345678`
+
 **Allowed packages:** `starter`, `business`, `premium`  
 **Allowed business types:** `Shop`, `Clinic`, `Tuition / Coaching`, `Salon`, `Restaurant / Cafe`, `Other`  
 **Response (201 Created):**
@@ -115,50 +122,3 @@ All responses return standard JSON. Errors follow the unified shape:
 
 **Allowed order statuses:**  
 `new`, `contacted`, `advance_paid`, `in_progress`, `preview_ready`, `delivered`, `cancelled`
-
----
-
-## Example cURL Commands
-
-### 1. Create a New Order
-```bash
-curl -X POST http://localhost:8080/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Arun Patel",
-    "businessName": "Patel Sweets & Snacks",
-    "businessType": "Shop",
-    "package": "business",
-    "phone": "9820098200",
-    "whatsapp": "9820098200",
-    "email": "arun@patelsweets.com",
-    "contentLanguage": "Hindi, English",
-    "message": "Need online menu catalog and WhatsApp order button."
-  }'
-```
-
-### 2. List Orders (Admin)
-```bash
-curl -X GET "http://localhost:8080/api/admin/orders?limit=10" \
-  -H "X-Admin-Token: kumbuild_secret_admin_token_2026"
-```
-
-### 3. Update Order Status (Admin)
-```bash
-curl -X PATCH http://localhost:8080/api/admin/orders/1 \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Token: kumbuild_secret_admin_token_2026" \
-  -d '{"status":"advance_paid"}'
-```
-
-### 4. Send Promotional Campaign (Admin)
-```bash
-curl -X POST http://localhost:8080/api/admin/campaigns \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Token: kumbuild_secret_admin_token_2026" \
-  -d '{
-    "subject": "Special Festival Offer from Kumbuild",
-    "html": "<h2>Exclusive festive discount on website upgrades!</h2><p>Contact your account manager today.</p>",
-    "recipients": "all"
-  }'
-```

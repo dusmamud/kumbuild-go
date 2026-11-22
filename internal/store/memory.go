@@ -33,6 +33,12 @@ func (m *MemoryStore) CreateOrder(_ context.Context, o *models.Order) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	for _, existing := range m.orders {
+		if existing.Reference == o.Reference {
+			return ErrDuplicateReference
+		}
+	}
+
 	now := time.Now().UTC()
 	o.ID = m.nextOrderID
 	m.nextOrderID++

@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"kumbuild-go/internal/models"
 )
+
+var ErrDuplicateReference = errors.New("duplicate reference")
 
 type OrderFilter struct {
 	Status string

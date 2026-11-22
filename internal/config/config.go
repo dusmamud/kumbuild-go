@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strings"
 
@@ -26,8 +27,8 @@ func Load() *Config {
 	dbURL := getEnv("DATABASE_URL", "postgres://kumbuild:kumbuild@localhost:5432/kumbuild_orders?sslmode=disable")
 	brevoKey := os.Getenv("BREVO_API_KEY")
 	mailFrom := getEnv("MAIL_FROM", "hello@kumbuild.com")
-	ownerEmail := getEnv("OWNER_EMAIL", "owner@kumbuild.com")
-	adminToken := getEnv("ADMIN_TOKEN", "kumbuild_secret_admin_token_2026")
+	ownerEmail := getEnv("OWNER_EMAIL", "hello@kumbuild.com")
+	adminToken := os.Getenv("ADMIN_TOKEN")
 	turnstileKey := os.Getenv("TURNSTILE_SECRET_KEY")
 
 	corsRaw := getEnv("CORS_ORIGINS", "http://localhost:5173,https://kumbuild.com,https://www.kumbuild.com")
@@ -46,6 +47,13 @@ func Load() *Config {
 		TurnstileSecretKey: turnstileKey,
 		CORSOrigins:        origins,
 	}
+}
+
+func (c *Config) Validate() error {
+	if strings.TrimSpace(c.AdminToken) == "" {
+		return errors.New("ADMIN_TOKEN is required — set a long random value in .env")
+	}
+	return nil
 }
 
 func getEnv(key, defaultVal string) string {
