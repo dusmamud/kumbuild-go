@@ -60,15 +60,15 @@ func (s *PostgresStore) Close() {
 }
 
 func (s *PostgresStore) runMigrations(ctx context.Context) error {
-	// 1. Ensure schema_migrations exists
+	// 1. Ensure kumbuild_go_migrations exists (isolated from any legacy schema_migrations table)
 	_, err := s.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
+		CREATE TABLE IF NOT EXISTS kumbuild_go_migrations (
 			version VARCHAR(255) PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 	`)
 	if err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
+		return fmt.Errorf("create kumbuild_go_migrations: %w", err)
 	}
 
 	entries, err := fs.ReadDir(migrationFS, "migrations")
@@ -86,7 +86,7 @@ func (s *PostgresStore) runMigrations(ctx context.Context) error {
 
 	for _, file := range files {
 		var exists bool
-		err := s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)", file).Scan(&exists)
+		err := s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM kumbuild_go_migrations WHERE version = $1)", file).Scan(&exists)
 		if err != nil {
 			return fmt.Errorf("check migration %s: %w", file, err)
 		}
@@ -109,7 +109,7 @@ func (s *PostgresStore) runMigrations(ctx context.Context) error {
 			return fmt.Errorf("exec migration %s: %w", file, err)
 		}
 
-		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", file); err != nil {
+		if _, err := tx.Exec(ctx, "INSERT INTO kumbuild_go_migrations (version) VALUES ($1)", file); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("record migration %s: %w", file, err)
 		}
